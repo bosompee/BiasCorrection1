@@ -1,0 +1,91 @@
+---
+title: "Forecast"
+author: "Patience Bosompemaa"
+date: "10/24/2022"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning=FALSE)
+library(stargazer)
+library(tidyverse)
+library(rmarkdown)
+library('R2jags')
+
+library(zoo)
+library(dplyr)
+library(tidyverse)
+library(lubridate)
+
+library(forecast)
+library(tseries)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+FORECASTING of the bias corrected NHM streamflow data
+```{r}
+FC <- read.csv("C:/Users/p739b253/OneDrive - University of Kansas/FEWtures/Bias correction_NHM/FC.csv")
+FC
+
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r}
+#checking if the dataset is a time series
+class(FC)  #data is in "dataframe" form
+
+#converting the data first to time series
+FCtime=ts(FC[,2],start=c(1980,10),frequency = 12)
+
+#checking again if the dataset is a time series
+class(FCtime)  #data is in "ts" now
+
+library(forecast)
+library(tseries)
+plot(FCtime)
+
+acf(FCtime)
+pacf(FCtime)
+
+adf.test(FCtime)
+
+FCModel= auto.arima(FCtime,ic="aic",trace = TRUE)
+FCModel
+acf(ts(FCModel$residuals))
+pacf(ts(FCModel$residuals))
+```
+
+FORECAST
+
+```{r}
+FCModel_forecast <- forecast(FCModel, level = c(95), h = 10*12)
+FCModel_forecast
+
+plot(FCModel_forecast)
+
+```
+
+```{r}
+# Validation of forecast using the "box test" function
+
+Box.test(FCModel_forecast$resid, lag = 5, type = "Ljung-Box")
+
+Box.test(FCModel_forecast$resid, lag = 10, type = "Ljung-Box")
+```
+The p-value is greater than 0.05 which means the forecasted data is not having auto correlation
+
+
+
+
+
+
