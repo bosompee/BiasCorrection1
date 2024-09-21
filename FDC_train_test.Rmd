@@ -1,0 +1,379 @@
+---
+title: "FDC_train_test"
+author: "Patience Bosompemaa"
+date: "6/7/2023"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning=FALSE)
+library(stargazer)
+library(tidyverse)
+library(rmarkdown)
+library('R2jags')
+
+library(zoo)
+library(dplyr)
+library(tidyverse)
+library(lubridate)
+
+library(forecast)
+library(tseries)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r}
+## read in csv file of stream gages
+df_gages <- read_csv("C:/Users/p739b253/OneDrive - University of Kansas/FEWtures/Bias correction_NHM/newNC.csv")
+df_gages
+
+#look at column names
+names(df_gages)
+
+# get a vector of all ID numbers
+all_gages <- df_gages$Site_no.
+all_gages
+
+gage <- all_gages[27]
+gage
+
+# get a vector of all ID numbers
+all_gages2 <- df_gages$Segment
+all_gages2
+
+seg <- all_gages2[27]
+seg
+
+####################################################################
+path_to_usgs_data <- "C:/Users/p739b253/OneDrive - University of Kansas/FEWtures/NHM_data/streamflowdata/"
+
+# USGS data
+mf <- read.csv(paste0(path_to_usgs_data, "Discharge_", gage, "_RawC.csv"))
+#head(mf)
+
+#changing the date format to standard unambigious standard
+mf$Date <-mdy(mf$Date)
+mf$Year <- year(mf$Date)
+#mf <- subset(mf, Year >= 1980 & Year <= 2016)
+
+mf1 <- subset(mf, Date >= "1980-10-01" & Year <= 2016)
+```
+
+```{r}
+
+##########################################################################
+
+# NHM data
+df <- read.csv("C:/Users/p739b253/Documents/nhm_sf.csv")
+#head(df)
+seg_colname <- paste0("X", seg)
+df_seg <- df[,c("Date", seg_colname)]
+
+df_seg$Date <-mdy(df_seg$Date)
+df_seg$Year <- year(df_seg$Date)
+#mf <- subset(mf, Year >= 1980 & Year <= 2016)
+
+df_seg1 <- subset(df_seg, Date >= "1980-10-01" & Year <= 2016)
+
+# rename one column name
+colnames(df_seg1)[colnames(df_seg1)=="X33743"]<-"Sim"      #change seg ID
+
+#JOIN data
+df_joined <- left_join(df_seg1, mf1, by = "Date")
+
+df_joined<- df_joined[c("Date", "Sim", "Q")]
+
+
+#converting data from daily to monthly
+df_joined1 <- df_joined       #Duplicate data
+df_joined1$year_month <- floor_date(df_joined1$Date, "month")  #Create year-month column
+
+df_joined1_aggr1 <- aggregate(Sim ~ year_month,
+                              df_joined1,
+                              FUN = mean)
+
+df_joined1_aggr2 <- aggregate(Q ~ year_month,
+                              df_joined1,
+                              FUN = mean)
+
+```
+
+```{r}
+#JOIN data again
+df_joinednew <- left_join(df_joined1_aggr1, df_joined1_aggr2, by = "year_month")
+```
+
+```{r}
+#splitting data up for train and test datasets
+#70% for train and 30% for split
+
+set.seed(123) # this will always preserve the results every single time. without this the data values split up 70/30% will always be different each time. so it is a always good idea to set the seed for the reproducability purposes
+
+indices <- sample(nrow(df_joinednew), 0.7 * nrow(df_joinednew))
+train <- df_joinednew[indices,] # it shows 700 rows; hence 70% of the data has been put into train set
+test <- df_joinednew[-indices,] # it shows 300 rows; hence 30% of the data has been put into test set
+```
+
+
+```{r}
+library(EcoHydRology)
+
+library(hydrostats)
+
+library(hydroTSM)
+library(gridExtra)
+
+```
+ANALYSIS FOR TRAINING DATA
+```{r}
+# FDC for Sim and Obs
+#fdc(df_joined$Q,plot = T,lQ.thr=0.8,ylab='Q, [ft3/s]',main='Upstream monthly duration curve',thr.shw=TRUE)
+probObs <- fdc(train$Q,plot = T,lQ.thr=0.8,ylab='Q, [ft3/s]',main='Observed Flow Duration Curve',thr.shw=TRUE)
+probSim <- fdc(train$Sim,plot = T,lQ.thr=0.8,ylab='Q, [ft3/s]',main='Simulated Flow Duration Curve',thr.shw=TRUE)
+
+df_sim_fdc <- train[,c("year_month", "Sim")]
+df_sim_fdc$probSim <- probSim
+df_sim_fdc$probSimRound <- round(df_sim_fdc$probSim, 3)
+df_sim_fdc_summarize <-
+  summarize(group_by(df_sim_fdc, probSimRound), Qsim_mean = mean(Sim))
+```
+
+```{r}
+
+#summarize(group_by(df_sim_fdc, probSimRound, Date), Qsim_mean = mean(Sim))
+df_obs_fdc <- train[,c("year_month", "Q")]
+df_obs_fdc$probObs <- probObs
+df_obs_fdc$probObsRound <- round(df_obs_fdc$probObs, 3)
+df_obs_fdc_summarize <-
+  summarize(group_by(df_obs_fdc, probObsRound), Qobs_mean = mean(Q))
+
+df_fdc_joined <- left_join(df_sim_fdc_summarize, df_obs_fdc_summarize, by = c("probSimRound" = "probObsRound"))
+```
+
+```{r}
+
+# interpolate to fill gaps in probObsRound
+#interpolate missing values in 'Qobs_mean' column
+df_fdc_joined$Qobs_meanInt <- na.approx(df_fdc_joined$Qobs_mean)
+probObsInt <- fdc(df_fdc_joined$Qobs_meanInt,plot = T,lQ.thr=0.8,ylab='Q, [ft3/s]',main='Flow Duration Curve',thr.shw=TRUE)
+df_fdc_joined$probObsInt <- probObsInt
+
+# to correct df_joined, make a column in df_joined called probSimRound where probSim is rounded to 3 places
+df_fdc_joined$probObsIntRound <- round(df_fdc_joined$probObsInt, 3)
+df_corrected <- left_join(df_sim_fdc, df_fdc_joined[,c("probSimRound", "Qobs_meanInt")], by = "probSimRound")
+df_corrected_with_obs <- left_join(df_corrected, df_obs_fdc[,c("year_month", "Q")], by = "year_month")
+
+#change column name "Qobs_meanInt" to "SimBC"
+colnames(df_corrected_with_obs)[5]<-"SimCorrected"
+
+```
+
+```{r}
+#Sim will be simulated
+#Qobs_meanInt will be bias correct simulated
+#Q will be actual observations
+
+library(hydroGOF)
+
+# Linear Plot
+###################################
+ggplot(df_corrected_with_obs, aes( x = Q, y = SimCorrected)) +
+  geom_abline(intercept = 0, slope = 1)+
+  geom_point(color="red", size = 2)+
+  geom_smooth(method = 'lm', se = 0)+
+  scale_y_log10()+
+  scale_x_log10()+
+  theme_bw()+
+  labs(x = 'Measured [ft3/s]', y= 'Simulated [ft3/s]')
+#theme_classic()
+
+fit_linear_Rvalid <- lm(SimCorrected ~ Q, data = df_corrected_with_obs)
+summary(fit_linear_Rvalid)
+```
+
+```{r}
+
+##All Metrics
+gof(sim=df_corrected_with_obs$SimCorrected, obs=df_corrected_with_obs$Q)
+```
+
+```{r}
+library(ggplot2)
+
+############################################################################################
+#     ggplot for time series
+###########################################################
+
+#SimCorrected vs Sim vs Measured
+
+ggplot(data=df_corrected_with_obs, mapping=aes( x = year_month))+
+  geom_line(mapping = aes(y = SimCorrected, color= "SimCorrected"))+
+  geom_line(mapping = aes(y = Sim, color= "Sim"))+     #change y value
+  geom_line(mapping = aes(y = Q, color= "Q"))+
+  #scale_x_continuous(breaks = seq(1980,2016,4))+
+  scale_color_manual(labels=c('After Bias Correction', 'Simulated', 'Measured'), values = c('SimCorrected'='red', 'Sim'='blue', 'Q'='black'))+
+  labs(x= 'Time', y= 'Q (ft3/s)', title = 'Monthly Observations vs Simulations')+
+  #theme_classic()+
+  theme(text = element_text(size=15))+   #increase All font sizes
+  theme(axis.text = element_text(size = 15))+ #changing axis text size
+  guides(color= guide_legend(title = ''))
+
+```
+
+```{r}
+
+#SimCorrected vs Measured
+
+ggplot(data=df_corrected_with_obs, mapping=aes( x = year_month))+
+  geom_line(mapping = aes(y = SimCorrected, color= "SimCorrected"))+
+  #geom_line(mapping = aes(y = Sim, color= "Sim"))+     #change y value
+  geom_line(mapping = aes(y = Q, color= "Q"))+
+  #scale_x_continuous(breaks = seq(1980,2016,4))+
+  scale_color_manual(labels=c('After Bias Correction', 'Measured'), values = c('SimCorrected'='red', 'Q'='black'))+
+  labs(x= 'Time', y= 'Q (ft3/s)', title = 'Monthly Observations vs Simulations')+
+  #theme_classic()+
+  theme(text = element_text(size=15))+   #increase All font sizes
+  theme(axis.text = element_text(size = 15))+ #changing axis text size
+  guides(color= guide_legend(title = ''))
+```
+
+ANALYSIS FOR TESTING DATA
+
+```{r}
+# FDC for Sim and Obs
+#fdc(df_joined$Q,plot = T,lQ.thr=0.8,ylab='Q, [ft3/s]',main='Upstream monthly duration curve',thr.shw=TRUE)
+probObs <- fdc(test$Q,plot = T,lQ.thr=0.8,ylab='Q, [ft3/s]',main='Observed Flow Duration Curve',thr.shw=TRUE)
+probSim <- fdc(test$Sim,plot = T,lQ.thr=0.8,ylab='Q, [ft3/s]',main='Simulated Flow Duration Curve',thr.shw=TRUE)
+
+df_sim_fdc <- test[,c("year_month", "Sim")]
+df_sim_fdc$probSim <- probSim
+df_sim_fdc$probSimRound <- round(df_sim_fdc$probSim, 3)
+df_sim_fdc_summarize <-
+  summarize(group_by(df_sim_fdc, probSimRound), Qsim_mean = mean(Sim))
+```
+
+```{r}
+
+#summarize(group_by(df_sim_fdc, probSimRound, Date), Qsim_mean = mean(Sim))
+df_obs_fdc <- test[,c("year_month", "Q")]
+df_obs_fdc$probObs <- probObs
+df_obs_fdc$probObsRound <- round(df_obs_fdc$probObs, 3)
+df_obs_fdc_summarize <-
+  summarize(group_by(df_obs_fdc, probObsRound), Qobs_mean = mean(Q))
+
+df_fdc_joined <- left_join(df_sim_fdc_summarize, df_obs_fdc_summarize, by = c("probSimRound" = "probObsRound"))
+```
+
+```{r}
+
+# interpolate to fill gaps in probObsRound
+#interpolate missing values in 'Qobs_mean' column
+df_fdc_joined$Qobs_meanInt <- na.approx(df_fdc_joined$Qobs_mean)
+probObsInt <- fdc(df_fdc_joined$Qobs_meanInt,plot = T,lQ.thr=0.8,ylab='Q, [ft3/s]',main='Flow Duration Curve',thr.shw=TRUE)
+df_fdc_joined$probObsInt <- probObsInt
+
+# to correct df_joined, make a column in df_joined called probSimRound where probSim is rounded to 3 places
+df_fdc_joined$probObsIntRound <- round(df_fdc_joined$probObsInt, 3)
+df_corrected <- left_join(df_sim_fdc, df_fdc_joined[,c("probSimRound", "Qobs_meanInt")], by = "probSimRound")
+df_corrected_with_obs <- left_join(df_corrected, df_obs_fdc[,c("year_month", "Q")], by = "year_month")
+
+#change column name "Qobs_meanInt" to "SimBC"
+colnames(df_corrected_with_obs)[5]<-"SimCorrected"
+
+```
+
+```{r}
+#Sim will be simulated
+#Qobs_meanInt will be bias correct simulated
+#Q will be actual observations
+
+library(hydroGOF)
+
+# Linear Plot
+###################################
+ggplot(df_corrected_with_obs, aes( x = Q, y = SimCorrected)) +
+  geom_abline(intercept = 0, slope = 1)+
+  geom_point(color="red", size = 2)+
+  geom_smooth(method = 'lm', se = 0)+
+  scale_y_log10()+
+  scale_x_log10()+
+  theme_bw()+
+  labs(x = 'Measured [ft3/s]', y= 'Simulated [ft3/s]')
+#theme_classic()
+
+fit_linear_Rvalid <- lm(SimCorrected ~ Q, data = df_corrected_with_obs)
+summary(fit_linear_Rvalid)
+```
+
+```{r}
+
+##All Metrics
+gof(sim=df_corrected_with_obs$SimCorrected, obs=df_corrected_with_obs$Q)
+```
+
+```{r}
+library(ggplot2)
+
+############################################################################################
+#     ggplot for time series
+###########################################################
+
+#SimCorrected vs Sim vs Measured
+
+ggplot(data=df_corrected_with_obs, mapping=aes( x = year_month))+
+  geom_line(mapping = aes(y = SimCorrected, color= "SimCorrected"))+
+  geom_line(mapping = aes(y = Sim, color= "Sim"))+     #change y value
+  geom_line(mapping = aes(y = Q, color= "Q"))+
+  #scale_x_continuous(breaks = seq(1980,2016,4))+
+  scale_color_manual(labels=c('After Bias Correction', 'Simulated', 'Measured'), values = c('SimCorrected'='red', 'Sim'='blue', 'Q'='black'))+
+  labs(x= 'Time', y= 'Q (ft3/s)', title = 'Monthly Observations vs Simulations')+
+  #theme_classic()+
+  theme(text = element_text(size=15))+   #increase All font sizes
+  theme(axis.text = element_text(size = 15))+ #changing axis text size
+  guides(color= guide_legend(title = ''))
+
+```
+
+```{r}
+
+#SimCorrected vs Measured
+
+ggplot(data=df_corrected_with_obs, mapping=aes( x = year_month))+
+  geom_line(mapping = aes(y = SimCorrected, color= "SimCorrected"))+
+  #geom_line(mapping = aes(y = Sim, color= "Sim"))+     #change y value
+  geom_line(mapping = aes(y = Q, color= "Q"))+
+  #scale_x_continuous(breaks = seq(1980,2016,4))+
+  scale_color_manual(labels=c('After Bias Correction', 'Measured'), values = c('SimCorrected'='red', 'Q'='black'))+
+  labs(x= 'Time', y= 'Q (ft3/s)', title = 'Monthly Observations vs Simulations')+
+  #theme_classic()+
+  theme(text = element_text(size=15))+   #increase All font sizes
+  theme(axis.text = element_text(size = 15))+ #changing axis text size
+  guides(color= guide_legend(title = ''))
+```
+
+
+
+
+
+
+
+
+
+
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+plot(pressure)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
