@@ -9,6 +9,7 @@ The USGS NHM-PRMS streamflow results (Hay, 2019) were downloaded from the USGS S
 The USGS measured streamflow results were obtained from the National Water Information System (NWIS) (USGS, 2022) (Water Resources of the United States—National Water Information System (NWIS) Mapper (usgs.gov), for example: (USGS 07130500 ARKANSAS RIVER BELOW JOHN MARTIN RESERVOIR, CO.). The code used to download the measured streamflow is in the R file "DATA DOWLOAD_USGS GAGES". The stream gages for our region is compiled in the "newSteamGagesCARB_2a" csv file, get a vector of all the gages and put in the vectors to download the specific gages. 
 
 The NHM-PRMS streamflow ouputs for the CARB can be found in "streamflowdata.7z". All the measured streamflow downloaded for all the gages can be found in the "streamflowadata" folder. Units for the NHM-PRMS streamflow and the measured streamflow data are cubic feet per second.
+Note: The "7z" files are huge files that required more space on your computer. 
  
 ## STEPS FOR THE BIAS CORRECTION
 1. Comparing simulated NHM streamflow to observed/measured streamflows revealed considerable mismatch. This analysis was carried out for all the gages in the CARB but R file "SimMeasuredCombined" shows the analysis for gages A, B, C and D.
